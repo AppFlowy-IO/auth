@@ -66,6 +66,19 @@ mindmap
 
 ---
 
+### In-Place Patches to Upstream Migrations
+
+In addition to the cherry-picked feature commits, the following upstream files
+have been modified in place. Re-apply these on every merge from master:
+
+| File | Patch | Why |
+|------|-------|-----|
+| `migrations/20240612123726_enable_rls_update_grants.up.sql` | Wraps the `grant select … to postgres with grant option` block in `if exists (select 1 from pg_roles where rolname = 'postgres') then … end if;` | Upstream hardcodes the `postgres` role. Self-hosted deployments using a non-default DB superuser hit `ERROR: role "postgres" does not exist (SQLSTATE 42704)` and crash-loop on first start. RLS is still enabled unconditionally; only the grants are gated. See AppFlowy-Cloud issue #1615. |
+
+**On every master merge:** check `git diff master..HEAD -- migrations/20240612123726_enable_rls_update_grants.up.sql` is non-empty and the conditional is still present. If a merge undoes the patch (e.g., upstream rewrites the file), re-apply the gate before tagging a release.
+
+---
+
 ## Verification: Master Does NOT Have These
 
 ✅ **All 11 commits are necessary** - Verified against current master (commit `4e8275f`):
