@@ -47,7 +47,12 @@ func IsSAMLMetadataStale(idpMetadata *saml.EntityDescriptor, samlProvider models
 
 func (a *API) SamlAcs(w http.ResponseWriter, r *http.Request) error {
 	if err := a.handleSamlAcs(w, r); err != nil {
-		u, uerr := url.Parse(a.config.SiteURL)
+		redirectTo := a.config.SiteURL
+		if callbackErr, ok := err.(*samlCallbackError); ok {
+			redirectTo = callbackErr.redirectTo
+			err = callbackErr.err
+		}
+		u, uerr := url.Parse(redirectTo)
 		if uerr != nil {
 			return apierrors.NewInternalServerError("site url is improperly formattted").WithInternalError(err)
 		}
@@ -59,8 +64,23 @@ func (a *API) SamlAcs(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// Preserve the validated callback after the one-time RelayState has been consumed.
+type samlCallbackError struct {
+	err        error
+	redirectTo string
+}
+
+func (e *samlCallbackError) Error() string { return e.err.Error() }
+func (e *samlCallbackError) Unwrap() error { return e.err }
+
 // handleSamlAcs implements the main Assertion Consumer Service endpoint behavior.
-func (a *API) handleSamlAcs(w http.ResponseWriter, r *http.Request) error {
+func (a *API) handleSamlAcs(w http.ResponseWriter, r *http.Request) (callbackErr error) {
+	errorRedirectTo := ""
+	defer func() {
+		if callbackErr != nil && errorRedirectTo != "" {
+			callbackErr = &samlCallbackError{err: callbackErr, redirectTo: errorRedirectTo}
+		}
+	}()
 	ctx := r.Context()
 
 	db := a.db.WithContext(ctx)
@@ -85,6 +105,13 @@ func (a *API) handleSamlAcs(w http.ResponseWriter, r *http.Request) error {
 			return apierrors.NewNotFoundError(apierrors.ErrorCodeSAMLRelayStateNotFound, "SAML RelayState does not exist, try logging in again?")
 		} else if err != nil {
 			return err
+		}
+
+		// Only trust the callback stored by the SP-initiated request, subject to
+		// the same allowlist as successful logins. Retain it before expiry checks
+		// and deletion; later assertion or signup failures must return there too.
+		if utilities.IsRedirectURLValid(config, relayState.RedirectTo) {
+			errorRedirectTo = relayState.RedirectTo
 		}
 
 		if time.Since(relayState.CreatedAt) >= a.config.SAML.RelayStateValidityPeriod {
