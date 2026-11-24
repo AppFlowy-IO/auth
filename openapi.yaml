@@ -61,14 +61,16 @@ tags:
 paths:
   /token:
     post:
-      summary: Issues access and refresh tokens based on grant type.
+      summary: Issues tokens for the selected grant.
       tags:
         - auth
       parameters:
         - name: grant_type
           in: query
-          required: true
+          required: false
           description: >
+            Select the grant here for JSON requests or in the form body for token exchange.
+
             - What grant type should be used to issue an access and refresh token. Note: `id_token` is only offered in experimental mode. 
 
             - CAPTCHA protection does not apply on the `refresh_token` grant flow.
@@ -84,10 +86,36 @@ paths:
               - id_token
               - pkce
               - web3
+              - urn:ietf:params:oauth:grant-type:token-exchange
       security:
         - APIKeyAuth: []
+        - ExchangeClientAuth: []
       requestBody:
         content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [subject_token, subject_token_type]
+              properties:
+                grant_type:
+                  type: string
+                  enum: ["urn:ietf:params:oauth:grant-type:token-exchange"]
+                subject_token:
+                  type: string
+                  writeOnly: true
+                  description: Entra delegated access token for the registered resource API.
+                subject_token_type:
+                  type: string
+                  enum: ["urn:ietf:params:oauth:token-type:access_token"]
+                requested_token_type:
+                  type: string
+                  enum: ["urn:ietf:params:oauth:token-type:access_token"]
+                audience:
+                  type: string
+                  format: uuid
+                scope:
+                  type: string
+                  description: Space-separated subset of the client and subject grants.
           application/json:
             examples:
               grant_type=password:
@@ -176,11 +204,13 @@ paths:
       responses:
         200:
           description: >
-            An access and refresh token have been successfully issued.
+            Interactive sign-in returns a session. Token exchange returns a scoped access token.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AccessTokenResponseSchema"
+                anyOf:
+                  - $ref: "#/components/schemas/AccessTokenResponseSchema"
+                  - $ref: "#/components/schemas/ExchangeTokenResponse"
 
         400:
           $ref: "#/components/responses/BadRequestResponse"
@@ -192,6 +222,30 @@ paths:
           $ref: "#/components/responses/InternalServerErrorResponse"
         429:
           $ref: "#/components/responses/RateLimitResponse"
+        '503':
+          description: Token exchange could not retrieve Entra signing keys. Retry after the indicated delay.
+          headers:
+            Retry-After:
+              schema: {type: integer, example: 5}
+
+  /.well-known/token-exchange-jwks.json:
+    get:
+      summary: Public verification keys for delegated data API tokens when exchange is enabled.
+      security: []
+      responses:
+        '200':
+          description: ES256 public keys for the configured installation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items: {type: object, additionalProperties: true}
+        '404':
+          description: Token exchange is disabled.
 
   /logout:
     post:
@@ -3136,6 +3190,10 @@ paths:
 
 components:
   securitySchemes:
+    ExchangeClientAuth:
+      type: http
+      scheme: basic
+      description: Registered confidential dashboard client, required for token exchange.
     UserAuth:
       type: http
       scheme: bearer
@@ -3156,6 +3214,15 @@ components:
         When deployed on Supabase, this server requires an `apikey` header containing a valid Supabase-issued API key to call any endpoint.
 
   schemas:
+    ExchangeTokenResponse:
+      type: object
+      required: [access_token, issued_token_type, token_type, expires_in, scope]
+      properties:
+        access_token: {type: string}
+        issued_token_type: {type: string, enum: ["urn:ietf:params:oauth:token-type:access_token"]}
+        token_type: {type: string, enum: [Bearer]}
+        expires_in: {type: integer, minimum: 1}
+        scope: {type: string}
     GoTrueSecurity:
       type: object
       description: >

@@ -100,6 +100,52 @@ type Session struct {
 	RefreshTokenCounter *int64  `json:"-" db:"refresh_token_counter"`
 }
 
+// ExchangeSessionTag identifies short-lived data API grants. They have no refresh
+// credential and do not compete with the user's interactive single-session limit.
+const ExchangeSessionTag = "oauth-token-exchange"
+
+// GrantExchangeSession runs under the caller's user row lock. An active session
+// can be extended by fresh evidence. Once revoked or expired it gets a fresh ID.
+func GrantExchangeSession(tx *storage.Connection, user, client uuid.UUID, scope string, now, expiry time.Time, timebox *time.Duration) (*Session, error) {
+	const owned = "user_id = ? AND oauth_client_id = ? AND tag = ?"
+	var oldest *time.Time
+	if timebox != nil && *timebox > 0 {
+		cutoff := now.Add(-*timebox)
+		oldest = &cutoff
+	}
+	if err := tx.RawQuery("DELETE FROM sessions WHERE "+owned+" AND (not_after <= ? OR created_at <= ?::timestamptz)", user, client, ExchangeSessionTag, now, oldest).Exec(); err != nil {
+		return nil, err
+	}
+	var sessions []Session
+	if err := tx.RawQuery("SELECT * FROM sessions WHERE "+owned+" AND scopes = ? AND not_after > ? LIMIT 1 FOR UPDATE",
+		user, client, ExchangeSessionTag, scope, now).All(&sessions); err != nil {
+		return nil, err
+	}
+	if len(sessions) > 0 {
+		s := &sessions[0]
+		if s.NotAfter.After(expiry) {
+			expiry = *s.NotAfter
+		}
+		if oldest != nil && s.CreatedAt.Add(*timebox).Before(expiry) {
+			expiry = s.CreatedAt.Add(*timebox)
+		}
+		if !s.NotAfter.Equal(expiry) {
+			s.NotAfter = &expiry
+			if err := tx.UpdateOnly(s, "not_after"); err != nil {
+				return nil, err
+			}
+		}
+		return s, nil
+	}
+	s, err := NewSession(user, nil)
+	if err != nil {
+		return nil, err
+	}
+	tag := ExchangeSessionTag
+	s.ApplyGrantParams(&GrantParams{SessionNotAfter: &expiry, OAuthClientID: &client, Scopes: &scope, SessionTag: &tag})
+	return s, tx.Create(s)
+}
+
 func (Session) TableName() string {
 	tableName := "sessions"
 	return tableName

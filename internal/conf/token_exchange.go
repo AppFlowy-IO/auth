@@ -1,0 +1,142 @@
+package conf
+
+import (
+	"bytes"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/gofrs/uuid"
+	"github.com/kelseyhightower/envconfig"
+	"github.com/lestrrat-go/jwx/v2/jwk"
+)
+
+// TokenExchangeConfiguration contains the installation's explicit delegation policy.
+// The resource and client IDs are Entra application IDs. Only existing GoTrue
+// confidential clients listed here can act on behalf of a user.
+type TokenExchangeConfiguration struct {
+	Enabled       bool
+	TenantID      string `split_words:"true"`
+	Provider      string
+	Clients       ExchangeClients
+	SigningKeys   ExchangeSigningKeys `split_words:"true" json:"-"`
+	RateLimit     int                 `split_words:"true" default:"150"`
+	MaxConcurrent int                 `split_words:"true" default:"8"`
+}
+
+// ExchangeClient binds a confidential GoTrue client to an Entra caller and one resource.
+type ExchangeClient struct {
+	EntraClientID string   `json:"entra_client_id"`
+	Audience      string   `json:"audience"`
+	Scopes        []string `json:"scopes"`
+}
+
+// ExchangeClients is keyed by the GoTrue client registration ID.
+type ExchangeClients map[string]ExchangeClient
+
+func (c *ExchangeClients) Decode(value string) error {
+	return json.Unmarshal([]byte(value), c)
+}
+
+// ExchangeSigningKeys requires a distinct kid for each key so rotations remain verifiable.
+type ExchangeSigningKeys struct{ JwtKeysDecoder }
+
+func (k *ExchangeSigningKeys) Decode(value string) error {
+	var entries []json.RawMessage
+	if err := json.Unmarshal([]byte(value), &entries); err != nil {
+		return err
+	}
+	keys := make(JwtKeysDecoder, len(entries))
+	for i, entry := range entries {
+		if err := keys.decodeKey(keys, entry); err != nil {
+			return err
+		}
+		if len(keys) != i+1 {
+			return fmt.Errorf("duplicate token exchange signing key ID")
+		}
+	}
+	k.JwtKeysDecoder = keys
+	return nil
+}
+
+func (c *TokenExchangeConfiguration) load() error {
+	const prefix = "GOTRUE_TOKEN_EXCHANGE"
+	var gate struct{ Enabled bool }
+	if err := envconfig.Process(prefix, &gate); err != nil {
+		return err
+	}
+	if !gate.Enabled {
+		*c = TokenExchangeConfiguration{}
+		return nil
+	}
+	if err := envconfig.Process(prefix, c); err != nil {
+		// envconfig includes the original environment value in conversion errors.
+		if field, ok := err.(*envconfig.ParseError); ok && field.FieldName == "SigningKeys" {
+			return fmt.Errorf("invalid token exchange signing key configuration")
+		}
+		return err
+	}
+	return nil
+}
+
+func (c *TokenExchangeConfiguration) validate(loginKeys JwtKeysDecoder) error {
+	if !c.Enabled {
+		return nil
+	}
+	validID := func(s string) bool {
+		id, err := uuid.FromString(s)
+		return err == nil && id != uuid.Nil && id.String() == s
+	}
+	if !validID(c.TenantID) || !strings.HasPrefix(c.Provider, "custom:") || len(c.Provider) <= len("custom:") {
+		return fmt.Errorf("token exchange requires a tenant UUID and a custom OIDC provider")
+	}
+	if len(c.Clients) == 0 {
+		return fmt.Errorf("token exchange requires at least one registered client")
+	}
+	if c.RateLimit <= 0 || c.MaxConcurrent <= 0 {
+		return fmt.Errorf("token exchange rate and concurrency limits must be positive")
+	}
+	for id, policy := range c.Clients {
+		if !validID(id) || !validID(policy.EntraClientID) || !validID(policy.Audience) || policy.EntraClientID == policy.Audience || len(policy.Scopes) == 0 {
+			return fmt.Errorf("invalid token exchange client registration %q", id)
+		}
+		for _, scope := range policy.Scopes {
+			if scope == "" || strings.ContainsAny(scope, " \"\\") || strings.IndexFunc(scope, func(r rune) bool { return r < 0x21 || r > 0x7e }) >= 0 {
+				return fmt.Errorf("invalid token exchange scope for client %q", id)
+			}
+		}
+	}
+	if err := c.SigningKeys.Validate(); err != nil {
+		return fmt.Errorf("token exchange signing keys: %w", err)
+	}
+	for kid, key := range c.SigningKeys.JwtKeysDecoder {
+		var pub ecdsa.PublicKey
+		if kid == "" || key.PublicKey == nil || key.PublicKey.Algorithm() == nil || key.PublicKey.Algorithm().String() != "ES256" || key.PublicKey.Raw(&pub) != nil || pub.Curve != elliptic.P256() {
+			return fmt.Errorf("token exchange requires named ES256 P-256 keys")
+		}
+		if slices.Contains(key.PrivateKey.KeyOps(), jwk.KeyOpSign) {
+			var private ecdsa.PrivateKey
+			if key.PrivateKey.Raw(&private) != nil {
+				return fmt.Errorf("token exchange signing key must be private")
+			}
+		}
+		exchangePrint, err := key.PublicKey.Thumbprint(crypto.SHA256)
+		if err != nil {
+			return err
+		}
+		for _, loginKey := range loginKeys {
+			loginPrint, err := loginKey.PrivateKey.Thumbprint(crypto.SHA256)
+			if err != nil {
+				return err
+			}
+			if bytes.Equal(exchangePrint, loginPrint) {
+				return fmt.Errorf("token exchange and login signing keys must be distinct")
+			}
+		}
+	}
+	return nil
+}

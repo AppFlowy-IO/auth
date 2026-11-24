@@ -45,6 +45,11 @@ func (a *API) Token(w http.ResponseWriter, r *http.Request) error {
 	limiter := a.limiterOpts.Token
 
 	switch grantType {
+	case tokenExchangeGrant:
+		if a.exchange == nil {
+			return apierrors.NewBadRequestError(apierrors.ErrorCodeInvalidCredentials, "unsupported_grant_type")
+		}
+		return a.exchangeAccessToken(w, r)
 	case "password":
 		// set above
 	case "refresh_token":

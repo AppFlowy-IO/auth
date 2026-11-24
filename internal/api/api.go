@@ -48,6 +48,7 @@ type API struct {
 	tokenService *tokens.Service
 	mailer       mailer.Mailer
 	oidcCache    *provider.OIDCProviderCache
+	exchange     *tokenExchange
 
 	captchaVerifier security.CaptchaVerifier
 
@@ -102,6 +103,9 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 	}
 
 	api.oidcCache = provider.NewOIDCProviderCache(globalConfig.External.OIDCProviderCacheTTL)
+	if globalConfig.TokenExchange.Enabled {
+		api.exchange = newTokenExchange(&globalConfig.TokenExchange)
+	}
 
 	for _, o := range opt {
 		o.apply(api)
@@ -196,6 +200,9 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 
 	r.Get("/health", api.HealthCheck)
 	r.Get("/.well-known/jwks.json", api.WellKnownJwks)
+	if api.exchange != nil {
+		r.Get("/.well-known/token-exchange-jwks.json", api.exchangeJWKS)
+	}
 
 	// Both OIDC Discovery and OAuth Authorization Server Metadata use the same unified handler
 	// OIDC Discovery is an extension of RFC 8414, so one response satisfies both specs
