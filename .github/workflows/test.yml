@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:15
@@ -46,6 +46,16 @@ jobs:
         run: psql -f hack/init_postgres.sql postgresql://postgres:root@localhost:5432/postgres
       - name: Run migrations
         run: make migrate_dev
+      - name: Install lint tools that build with this Go version
+        # The Makefile installs the latest release of each tool unless it is already on the
+        # path. Those releases now need Go 1.26, and go.mod here names 1.25. These are the
+        # newest versions that still build with it; raise them together with go.mod.
+        run: |
+          set -x
+
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
       - name: Run linters and tests
         run: |
           set -x
@@ -67,5 +77,7 @@ jobs:
           sed -i '/^github.com\/supabase\/auth\/main/d' coverage.out
 
       - uses: shogo82148/actions-goveralls@25f5320d970fb565100cf1993ada29be1bb196a1 # v1.10.0
+        # Coverage is reported for the upstream repository only; this fork has no Coveralls project.
+        if: github.repository == 'supabase/auth'
         with:
           path-to-profile: coverage.out
