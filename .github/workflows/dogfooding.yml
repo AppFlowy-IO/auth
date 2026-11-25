@@ -13,6 +13,8 @@ permissions:
 
 jobs:
   check_dogfooding:
+    # Compares Supabase's own production and staging versions; it means nothing in a fork.
+    if: github.repository == 'supabase/auth'
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

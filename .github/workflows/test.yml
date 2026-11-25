@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:15
@@ -67,5 +67,7 @@ jobs:
           sed -i '/^github.com\/supabase\/auth\/main/d' coverage.out
 
       - uses: shogo82148/actions-goveralls@25f5320d970fb565100cf1993ada29be1bb196a1 # v1.10.0
+        # Coverage is reported for the upstream repository only; this fork has no Coveralls project.
+        if: github.repository == 'supabase/auth'
         with:
           path-to-profile: coverage.out

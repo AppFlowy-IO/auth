@@ -14,6 +14,8 @@ permissions:
 
 jobs:
   release_please:
+    # Supabase's release automation: it needs their app credentials and registries.
+    if: github.repository == 'supabase/auth'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
