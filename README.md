@@ -1249,8 +1249,9 @@ Returns:
 
 ### **POST /token**
 
-This is an OAuth2 endpoint that currently implements
-the password and refresh_token grant types
+Password, refresh token, ID token, PKCE, and Web3 clients select their grant with
+`grant_type`. Installations can also enable delegated access-token exchange for
+registered backends. [Entra token exchange](appflowy/TOKEN_EXCHANGE.md)
 
 query params:
 

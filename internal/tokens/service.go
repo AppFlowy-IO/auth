@@ -329,8 +329,7 @@ func (s *Service) RefreshTokenGrant(ctx context.Context, db *storage.Connection,
 				// check if the current session is the user's
 				// most recently refreshed valid session
 				for _, s := range sessions {
-					if s.ID == session.ID {
-						// current session, skip it
+					if s.ID == session.ID || (s.Tag != nil && *s.Tag == models.ExchangeSessionTag && s.OAuthClientID != nil) {
 						continue
 					}
 

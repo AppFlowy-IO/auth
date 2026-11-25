@@ -220,7 +220,7 @@ func (a *API) verifyCaptcha(w http.ResponseWriter, req *http.Request) (context.C
 		// skip captcha validation if authorization header contains an admin role
 		return ctx, nil
 	}
-	if shouldIgnore := isIgnoreCaptchaRoute(req); shouldIgnore {
+	if a.isIgnoreCaptchaRoute(req) {
 		return ctx, nil
 	}
 
@@ -250,12 +250,15 @@ func (a *API) verifyCaptcha(w http.ResponseWriter, req *http.Request) (context.C
 	return ctx, nil
 }
 
-func isIgnoreCaptchaRoute(req *http.Request) bool {
+func (a *API) isIgnoreCaptchaRoute(req *http.Request) bool {
 	if req.URL.Path != "/token" {
 		return false
 	}
 
 	switch req.FormValue("grant_type") {
+	case tokenExchangeGrant:
+		// This grant requires a registered confidential backend and has its own admission limits.
+		return a.exchange != nil
 	case "pkce":
 		return true
 
@@ -377,6 +380,16 @@ func (a *API) requireOAuthServerEnabled(w http.ResponseWriter, req *http.Request
 		return nil, apierrors.NewNotFoundError(apierrors.ErrorCodeFeatureDisabled, "OAuth server is disabled")
 	}
 	return ctx, nil
+}
+
+// requireOAuthClientRegistry admits client administration whenever the registry exists:
+// for the OAuth server, and for token exchange, which authenticates registered backends
+// and needs none of the authorization endpoints that issue full login tokens.
+func (a *API) requireOAuthClientRegistry(w http.ResponseWriter, req *http.Request) (context.Context, error) {
+	if a.oauthServer == nil {
+		return nil, apierrors.NewNotFoundError(apierrors.ErrorCodeFeatureDisabled, "OAuth server is disabled")
+	}
+	return req.Context(), nil
 }
 
 func (a *API) requireCustomOAuthEnabled(w http.ResponseWriter, req *http.Request) (context.Context, error) {

@@ -369,11 +369,12 @@ type GlobalConfiguration struct {
 	API           APIConfiguration
 	DB            DBConfiguration
 	External      ProviderConfiguration
-	CustomOAuth   CustomOAuthConfiguration `envconfig:"CUSTOM_OAUTH"`
-	OAuthServer   OAuthServerConfiguration `envconfig:"OAUTH_SERVER"`
-	Logging       LoggingConfig            `envconfig:"LOG"`
-	Profiler      ProfilerConfig           `envconfig:"PROFILER"`
-	OperatorToken string                   `split_words:"true" required:"false"`
+	CustomOAuth   CustomOAuthConfiguration   `envconfig:"CUSTOM_OAUTH"`
+	OAuthServer   OAuthServerConfiguration   `envconfig:"OAUTH_SERVER"`
+	TokenExchange TokenExchangeConfiguration `ignored:"true" json:"-"`
+	Logging       LoggingConfig              `envconfig:"LOG"`
+	Profiler      ProfilerConfig             `envconfig:"PROFILER"`
+	OperatorToken string                     `split_words:"true" required:"false"`
 	Tracing       TracingConfig
 	Metrics       MetricsConfig
 	SMTP          SMTPConfiguration
@@ -1050,6 +1051,9 @@ func loadGlobal(config *GlobalConfiguration) error {
 	if err := envconfig.Process("gotrue", config); err != nil {
 		return err
 	}
+	if err := config.TokenExchange.load(); err != nil {
+		return err
+	}
 
 	if err := config.ApplyDefaults(); err != nil {
 		return err
@@ -1340,7 +1344,7 @@ func (c *GlobalConfiguration) Validate() error {
 		}
 	}
 
-	return nil
+	return c.TokenExchange.validate(c.JWT.Keys)
 }
 
 func (o *OAuthProviderConfiguration) ValidateOAuth() error {
