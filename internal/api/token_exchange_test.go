@@ -21,6 +21,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/stretchr/testify/require"
+	"github.com/supabase/auth/internal/api/apierrors"
 	"github.com/supabase/auth/internal/api/provider"
 	"github.com/supabase/auth/internal/conf"
 	"github.com/supabase/auth/internal/models"
@@ -407,4 +408,56 @@ func TestTokenExchangeIsolationDuringKeyOutage(t *testing.T) {
 		require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
 		require.Contains(t, w.Body.String(), "temporarily_unavailable")
 	}
+}
+
+func TestTokenExchangeAdministersClientsWithoutTheOAuthServer(t *testing.T) {
+	f := newExchangeFixture(t)
+	require.False(t, f.api.config.OAuthServer.Enabled)
+	admin, err := jwt.NewWithClaims(jwt.SigningMethodHS256, &AccessTokenClaims{Role: "supabase_admin"}).SignedString([]byte(f.api.config.JWT.Secret))
+	require.NoError(t, err)
+	register := func(api *API) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/admin/oauth/clients", strings.NewReader(
+			`{"client_name":"Dashboard","redirect_uris":["https://dashboard.example/callback"],"token_endpoint_auth_method":"client_secret_basic"}`))
+		r.Header.Set("Authorization", "Bearer "+admin)
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		api.handler.ServeHTTP(w, r)
+		return w
+	}
+	// Exchange is enabled before any backend exists, because the policy names a client ID
+	// that only registration creates. Until then no caller can exchange.
+	policy := f.api.config.TokenExchange.Clients[f.client]
+	f.api.config.TokenExchange.Clients = conf.ExchangeClients{}
+	require.NoError(t, f.api.config.Validate())
+	refused := f.exchange(t, f.api, f.subject(t, nil), f.secret, nil)
+	require.Equal(t, http.StatusUnauthorized, refused.Code, refused.Body.String())
+	require.Contains(t, refused.Body.String(), "invalid_client")
+
+	created := register(f.api)
+	require.Equal(t, http.StatusCreated, created.Code, created.Body.String())
+	var client struct {
+		ID     string `json:"client_id"`
+		Secret string `json:"client_secret"`
+	}
+	require.NoError(t, json.Unmarshal(created.Body.Bytes(), &client))
+
+	// The operator names the new registration in the exchange policy and restarts GoTrue.
+	// The secret the admin API returned then authenticates an exchange.
+	f.api.config.TokenExchange.Clients[client.ID] = policy
+	f.client = client.ID
+	w := f.exchange(t, f.api, f.subject(t, nil), client.Secret, nil)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	// Exchange uses the registry alone. The endpoints that issue full login tokens stay off.
+	for _, route := range [][2]string{
+		{http.MethodGet, "/oauth/authorize"}, {http.MethodPost, "/oauth/token"}, {http.MethodPost, "/oauth/clients/register"},
+	} {
+		w := httptest.NewRecorder()
+		f.api.handler.ServeHTTP(w, httptest.NewRequest(route[0], route[1], nil))
+		require.Equal(t, http.StatusNotFound, w.Code, route[1])
+		require.Contains(t, w.Body.String(), apierrors.ErrorCodeFeatureDisabled, route[1])
+	}
+	disabled := register(f.legacy)
+	require.Equal(t, http.StatusNotFound, disabled.Code, "an API built with neither feature has no registry")
+	require.Contains(t, disabled.Body.String(), apierrors.ErrorCodeFeatureDisabled)
 }

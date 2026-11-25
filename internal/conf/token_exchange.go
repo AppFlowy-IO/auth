@@ -17,7 +17,9 @@ import (
 
 // TokenExchangeConfiguration contains the installation's explicit delegation policy.
 // The resource and client IDs are Entra application IDs. Only existing GoTrue
-// confidential clients listed here can act on behalf of a user.
+// confidential clients listed here can act on behalf of a user. An enabled policy
+// with no clients refuses every exchange and opens the admin client registry, which
+// is how the first backend gets the client ID that this policy then names.
 type TokenExchangeConfiguration struct {
 	Enabled       bool
 	TenantID      string `split_words:"true"`
@@ -38,7 +40,13 @@ type ExchangeClient struct {
 // ExchangeClients is keyed by the GoTrue client registration ID.
 type ExchangeClients map[string]ExchangeClient
 
+// Decode accepts an empty value as no clients. A deployment file that forwards the
+// setting sends an empty string until the first backend has been registered.
 func (c *ExchangeClients) Decode(value string) error {
+	if strings.TrimSpace(value) == "" {
+		*c = ExchangeClients{}
+		return nil
+	}
 	return json.Unmarshal([]byte(value), c)
 }
 
@@ -93,9 +101,6 @@ func (c *TokenExchangeConfiguration) validate(loginKeys JwtKeysDecoder) error {
 	}
 	if !validID(c.TenantID) || !strings.HasPrefix(c.Provider, "custom:") || len(c.Provider) <= len("custom:") {
 		return fmt.Errorf("token exchange requires a tenant UUID and a custom OIDC provider")
-	}
-	if len(c.Clients) == 0 {
-		return fmt.Errorf("token exchange requires at least one registered client")
 	}
 	if c.RateLimit <= 0 || c.MaxConcurrent <= 0 {
 		return fmt.Errorf("token exchange rate and concurrency limits must be positive")

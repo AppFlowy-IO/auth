@@ -134,8 +134,10 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 	// Connect token service to API's time function (supports test overrides)
 	api.tokenService.SetTimeFunc(api.Now)
 
-	// Initialize OAuth server (only if enabled)
-	if globalConfig.OAuthServer.Enabled {
+	// Token exchange authenticates backends against the OAuth server's client registry,
+	// so the registry is administered with either feature. The authorization endpoints
+	// stay behind requireOAuthServerEnabled.
+	if globalConfig.OAuthServer.Enabled || globalConfig.TokenExchange.Enabled {
 		api.oauthServer = oauthserver.NewServer(globalConfig, db, api.tokenService)
 	}
 
@@ -404,7 +406,7 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 
 			// Admin only oauth client management endpoints
 			r.Route("/oauth", func(r *router) {
-				r.Use(api.requireOAuthServerEnabled)
+				r.Use(api.requireOAuthClientRegistry)
 				r.Route("/clients", func(r *router) {
 					// Manual client registration
 					r.Post("/", api.oauthServer.AdminOAuthServerClientRegister)

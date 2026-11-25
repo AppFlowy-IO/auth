@@ -42,6 +42,16 @@ func TestTokenExchangeConfiguration(t *testing.T) {
 	require.NoError(t, c.validate(nil))
 	require.Equal(t, 150, c.RateLimit)
 	require.Equal(t, 8, c.MaxConcurrent)
+	// Before the first backend is registered there is no client ID to name, and a
+	// deployment file forwards the unset policy as an empty string.
+	for _, none := range []string{"", "{}"} {
+		t.Setenv("GOTRUE_TOKEN_EXCHANGE_CLIENTS", none)
+		require.NoError(t, c.load(), "clients %q", none)
+		require.Empty(t, c.Clients)
+		require.NoError(t, c.validate(nil), "clients %q", none)
+	}
+	t.Setenv("GOTRUE_TOKEN_EXCHANGE_CLIENTS", `{"`+client+`":{"entra_client_id":"33333333-3333-4333-8333-333333333333","audience":"44444444-4444-4444-8444-444444444444","scopes":["data.read"]}}`)
+	require.NoError(t, c.load())
 	require.Error(t, c.validate(c.SigningKeys.JwtKeysDecoder), "login key cannot also sign delegated access")
 	duplicates, err := json.Marshal([]jwk.Key{key, key})
 	require.NoError(t, err)

@@ -382,6 +382,16 @@ func (a *API) requireOAuthServerEnabled(w http.ResponseWriter, req *http.Request
 	return ctx, nil
 }
 
+// requireOAuthClientRegistry admits client administration whenever the registry exists:
+// for the OAuth server, and for token exchange, which authenticates registered backends
+// and needs none of the authorization endpoints that issue full login tokens.
+func (a *API) requireOAuthClientRegistry(w http.ResponseWriter, req *http.Request) (context.Context, error) {
+	if a.oauthServer == nil {
+		return nil, apierrors.NewNotFoundError(apierrors.ErrorCodeFeatureDisabled, "OAuth server is disabled")
+	}
+	return req.Context(), nil
+}
+
 func (a *API) requireCustomOAuthEnabled(w http.ResponseWriter, req *http.Request) (context.Context, error) {
 	ctx := req.Context()
 	if !a.config.CustomOAuth.Enabled {
