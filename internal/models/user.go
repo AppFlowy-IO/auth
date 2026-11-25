@@ -392,6 +392,19 @@ func (u *User) UpdatePassword(tx *storage.Connection, sessionID *uuid.UUID) erro
 	}
 }
 
+// SetIsNonDefaultPassword stores whether the user's password is one they chose themselves.
+//
+// A password generated for a passwordless sign-up, or set by an administrator, is not: its
+// owner may never have seen it, so POST /user/change-password does not ask for it. Once the
+// user has chosen a password, changing it requires the current one.
+//
+// UpdatePassword does not write this column. Every place that decides the answer calls this
+// in the same transaction as the change it belongs to.
+func (u *User) SetIsNonDefaultPassword(tx *storage.Connection, isNonDefault bool) error {
+	u.IsNonDefaultPassword = isNonDefault
+	return tx.UpdateOnly(u, "is_non_default_password")
+}
+
 // Authenticate a user from a password
 func (u *User) Authenticate(ctx context.Context, tx *storage.Connection, password string, decryptionKeys map[string]string, encrypt bool, encryptionKeyID string) (bool, bool, error) {
 	if u.EncryptedPassword == nil {

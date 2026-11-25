@@ -51,28 +51,39 @@ make test
 
 ### Test Only New Features We Added
 
+Most of these tests are methods of a testify suite, so `go test -run` has to name the suite
+first: `TestUser/TestUserChangePassword`, not `TestUserChangePassword`. A pattern that names
+only the method matches no test, and `go test` then prints `ok ... [no tests to run]`. The
+commands in this guide had that mistake until 2026-11-25, which is how tests that could not
+pass were recorded as passing.
+
 ```bash
 # Test password validation (regex support)
 go test -v -run TestPasswordStrengthChecks ./internal/api
 
-# Test change password endpoint
-go test -v -run "TestUserChangePassword" ./internal/api
+# Test change password endpoint, and that PUT /user also stores a chosen password
+go test -v -run 'TestUser/(TestUserChangePassword|TestUserUpdatePasswordIsAChosenPassword)' ./internal/api
 
 # Test auth info endpoint
-go test -v -run "TestUserAuthInfo" ./internal/api
+go test -v -run 'TestUser/TestUserAuthInfo' ./internal/api
 
 # Test IsNonDefaultPassword field
-go test -v -run "TestIsNonDefaultPassword|TestUserAuthInfoStruct" ./internal/models
+go test -v -run 'TestUser/(TestIsNonDefaultPassword|TestUserAuthInfoStruct)' ./internal/models
 
-# Test recovery reset logic
-go test -v -run "TestPasswordRecoveryResets|TestEmailChangeResets" ./internal/api
+# Test what a verified recovery and an email change do to the flag
+go test -v -run 'TestVerify/(TestPasswordRecoveryResets|TestEmailChangeKeeps)' ./internal/api
 ```
 
-### Run All Our New Tests (21 tests)
+### Run All Our New Tests (23 tests)
 
 ```bash
-go test -v -run "TestPasswordStrengthChecks|TestUserChangePassword|TestUserAuthInfo|TestIsNonDefaultPassword|TestUserAuthInfoStruct|TestPasswordRecoveryResets|TestEmailChangeResets" ./internal/...
+go test -v -run 'TestPasswordStrengthChecks' ./internal/api
+go test -v -run '^(TestUser|TestVerify)$' ./internal/api ./internal/models
 ```
+
+The second command runs the whole `TestUser` and `TestVerify` suites. Run a suite whole at least
+once: its tests share one configuration, and a test that leaves a setting changed only breaks
+the tests that run after it.
 
 ---
 
@@ -231,10 +242,10 @@ make migrate_test
 # Step 4: Run our new tests
 echo "Testing new features..."
 go test -v -run "TestPasswordStrengthChecks" ./internal/api
-go test -v -run "TestUserChangePassword" ./internal/api
-go test -v -run "TestUserAuthInfo" ./internal/api
-go test -v -run "TestIsNonDefaultPassword" ./internal/models
-go test -v -run "TestPasswordRecoveryResets" ./internal/api
+go test -v -run "TestUser/TestUserChangePassword" ./internal/api
+go test -v -run "TestUser/TestUserAuthInfo" ./internal/api
+go test -v -run "TestUser/TestIsNonDefaultPassword" ./internal/models
+go test -v -run "TestVerify/TestPasswordRecoveryResets" ./internal/api
 
 # Step 5: Run full test suite
 echo "Running full test suite..."
@@ -272,16 +283,16 @@ echo "  → Password validation tests..."
 go test -v -run TestPasswordStrengthChecks ./internal/api 2>&1 | grep -E "PASS|FAIL"
 
 echo "  → Change password endpoint..."
-go test -v -run "TestUserChangePassword" ./internal/api 2>&1 | grep -E "PASS|FAIL"
+go test -v -run "TestUser/TestUserChangePassword" ./internal/api 2>&1 | grep -E "PASS|FAIL"
 
 echo "  → Auth info endpoint..."
-go test -v -run "TestUserAuthInfo" ./internal/api 2>&1 | grep -E "PASS|FAIL"
+go test -v -run "TestUser/TestUserAuthInfo" ./internal/api 2>&1 | grep -E "PASS|FAIL"
 
 echo "  → IsNonDefaultPassword field..."
-go test -v -run "TestIsNonDefaultPassword" ./internal/models 2>&1 | grep -E "PASS|FAIL"
+go test -v -run "TestUser/TestIsNonDefaultPassword" ./internal/models 2>&1 | grep -E "PASS|FAIL"
 
 echo "  → Recovery reset logic..."
-go test -v -run "TestPasswordRecoveryResets|TestEmailChangeResets" ./internal/api 2>&1 | grep -E "PASS|FAIL"
+go test -v -run "TestVerify/(TestPasswordRecoveryResets|TestEmailChangeKeeps)" ./internal/api 2>&1 | grep -E "PASS|FAIL"
 
 # Cleanup
 echo "🧹 Cleaning up..."
@@ -436,12 +447,13 @@ When all tests pass, you should see:
 
 ```
 ✅ Password validation: PASS (4 test cases with regex support)
-✅ User change password: PASS (7 test functions covering all edge cases)
+✅ User change password: PASS (8 test functions covering all edge cases)
+✅ User update stores a chosen password: PASS (1 test function)
 ✅ User auth info: PASS (4 test functions)
 ✅ IsNonDefaultPassword: PASS (4 test functions)
-✅ Recovery reset: PASS (2 test functions)
+✅ Recovery and email change: PASS (2 test functions)
 
-Total: 21 new tests, all passing
+Total: 23 new tests, all passing
 Coverage: ~82% of new code
 ```
 

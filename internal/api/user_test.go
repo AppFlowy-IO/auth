@@ -927,8 +927,90 @@ func (ts *UserTestSuite) TestUserChangePasswordNoCurrentPasswordForDefaultPasswo
 	require.True(ts.T(), u.IsNonDefaultPassword, "IsNonDefaultPassword should be set to true after user changes password")
 }
 
+// changePassword posts to /user/change-password with the session behind token.
+func (ts *UserTestSuite) changePassword(token string, body map[string]interface{}) *httptest.ResponseRecorder {
+	var buffer bytes.Buffer
+	require.NoError(ts.T(), json.NewEncoder(&buffer).Encode(body))
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/user/change-password", &buffer)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+
+	w := httptest.NewRecorder()
+	ts.API.handler.ServeHTTP(w, req)
+	return w
+}
+
+// The point of the flag: a password the user chose protects the next change of it. It only
+// does so if the endpoint stores the flag, which this test reads back through the endpoint.
+func (ts *UserTestSuite) TestUserChangePasswordAsksForAChosenPasswordNextTime() {
+	u, err := models.FindUserByEmailAndAudience(ts.API.db, "test@example.com", ts.Config.JWT.Aud)
+	require.NoError(ts.T(), err)
+	require.False(ts.T(), u.IsNonDefaultPassword, "the suite's password was not chosen through the API")
+	token := ts.generateAccessTokenAndSession(u)
+
+	w := ts.changePassword(token, map[string]interface{}{"password": "first-choice-123"})
+	require.Equal(ts.T(), http.StatusOK, w.Code, w.Body.String())
+
+	// Changing a password keeps the session that changed it, so the same token goes on.
+	w = ts.changePassword(token, map[string]interface{}{"password": "second-choice-123"})
+	require.Equal(ts.T(), http.StatusUnprocessableEntity, w.Code, w.Body.String())
+	require.Contains(ts.T(), w.Body.String(), "incorrect_current_password")
+
+	w = ts.changePassword(token, map[string]interface{}{
+		"current_password": "first-choice-123",
+		"password":         "second-choice-123",
+	})
+	require.Equal(ts.T(), http.StatusOK, w.Code, w.Body.String())
+}
+
+// Web and Desktop set a password with PUT /user after a recovery, and Desktop also when the
+// account has none. That is the user's own choice as much as one made on the dedicated endpoint.
+func (ts *UserTestSuite) TestUserUpdatePasswordIsAChosenPassword() {
+	ts.Config.Security.UpdatePasswordRequireReauthentication = false
+	ts.Config.Security.UpdatePasswordRequireCurrentPassword = false
+
+	u, err := models.FindUserByEmailAndAudience(ts.API.db, "test@example.com", ts.Config.JWT.Aud)
+	require.NoError(ts.T(), err)
+	token := ts.generateAccessTokenAndSession(u)
+	updateUser := func(body map[string]interface{}) *httptest.ResponseRecorder {
+		var buffer bytes.Buffer
+		require.NoError(ts.T(), json.NewEncoder(&buffer).Encode(body))
+
+		req := httptest.NewRequest(http.MethodPut, "http://localhost/user", &buffer)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+
+		w := httptest.NewRecorder()
+		ts.API.handler.ServeHTTP(w, req)
+		return w
+	}
+	isNonDefaultPassword := func() bool {
+		u, err := models.FindUserByEmailAndAudience(ts.API.db, "test@example.com", ts.Config.JWT.Aud)
+		require.NoError(ts.T(), err)
+		return u.IsNonDefaultPassword
+	}
+
+	// An update that sets no password says nothing about the password.
+	w := updateUser(map[string]interface{}{"data": map[string]interface{}{"name": "Test"}})
+	require.Equal(ts.T(), http.StatusOK, w.Code, w.Body.String())
+	require.False(ts.T(), isNonDefaultPassword())
+
+	w = updateUser(map[string]interface{}{"password": "chosen-password-123"})
+	require.Equal(ts.T(), http.StatusOK, w.Code, w.Body.String())
+	require.True(ts.T(), isNonDefaultPassword())
+
+	w = ts.changePassword(token, map[string]interface{}{"password": "another-password-123"})
+	require.Equal(ts.T(), http.StatusUnprocessableEntity, w.Code, w.Body.String())
+	require.Contains(ts.T(), w.Body.String(), "incorrect_current_password")
+}
+
 func (ts *UserTestSuite) TestUserChangePasswordWeakPassword() {
+	// The suite shares one configuration. A limit left behind refuses the short passwords
+	// that the tests after this one set.
+	minLength := ts.Config.Password.MinLength
 	ts.Config.Password.MinLength = 10
+	defer func() { ts.Config.Password.MinLength = minLength }()
 
 	u, err := models.FindUserByEmailAndAudience(ts.API.db, "test@example.com", ts.Config.JWT.Aud)
 	require.NoError(ts.T(), err)
