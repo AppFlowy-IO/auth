@@ -153,6 +153,9 @@ func (a *API) verifyGet(w http.ResponseWriter, r *http.Request, params *VerifyPa
 			user, terr = a.signupVerify(r, ctx, tx, user)
 		case mail.RecoveryVerification, mail.MagicLinkVerification:
 			user, terr = a.recoverVerify(r, tx, user)
+			if terr == nil {
+				terr = forgetChosenPassword(tx, user, params.Type)
+			}
 		case mail.EmailChangeVerification:
 			user, terr = a.emailChangeVerify(r, tx, params, user)
 			if user == nil && terr == nil {
@@ -257,6 +260,9 @@ func (a *API) verifyPost(w http.ResponseWriter, r *http.Request, params *VerifyP
 			user, terr = a.signupVerify(r, ctx, tx, user)
 		case mail.RecoveryVerification, mail.MagicLinkVerification:
 			user, terr = a.recoverVerify(r, tx, user)
+			if terr == nil {
+				terr = forgetChosenPassword(tx, user, params.Type)
+			}
 		case mail.EmailChangeVerification:
 			user, terr = a.emailChangeVerify(r, tx, params, user)
 			if user == nil && terr == nil {
@@ -397,6 +403,24 @@ func (a *API) recoverVerify(r *http.Request, conn *storage.Connection, user *mod
 		return nil, apierrors.NewInternalServerError("Database error updating user").WithInternalError(err)
 	}
 	return user, nil
+}
+
+// forgetChosenPassword records, once a password recovery has been verified, that the user
+// has no password they know. POST /user/change-password then stops asking for the current
+// one, until they choose a password again.
+//
+// Requesting a recovery must not do this: anyone can request one for any address. A
+// magic-link sign-in is verified by the same code and proves the same mailbox, but says
+// nothing about the password, so only a recovery counts. The password itself is untouched
+// and still signs the user in if they remember it after all.
+func forgetChosenPassword(tx *storage.Connection, user *models.User, verificationType string) error {
+	if verificationType != mail.RecoveryVerification || !user.IsNonDefaultPassword {
+		return nil
+	}
+	if err := user.SetIsNonDefaultPassword(tx, false); err != nil {
+		return apierrors.NewInternalServerError("Database error updating user").WithInternalError(err)
+	}
+	return nil
 }
 
 func (a *API) smsVerify(r *http.Request, conn *storage.Connection, user *models.User, params *VerifyParams) (*models.User, error) {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1583,101 +1584,114 @@ func (ts *VerifyTestSuite) TestVerifyPhoneChangeSendsNotificationEmailDisabled()
 	require.Len(ts.T(), mockMailer.PhoneChangedMailCalls, 0, "Expected 0 phone change notification email(s) to be sent")
 }
 
-func (ts *VerifyTestSuite) TestPasswordRecoveryResetsIsNonDefaultPassword() {
-	u, err := models.FindUserByEmailAndAudience(ts.API.db, "test@example.com", ts.Config.JWT.Aud)
+// passwordUser reloads the suite's user by address.
+func (ts *VerifyTestSuite) passwordUser(email string) *models.User {
+	u, err := models.FindUserByEmailAndAudience(ts.API.db, email, ts.Config.JWT.Aud)
 	require.NoError(ts.T(), err)
-
-	// Set IsNonDefaultPassword to true (user has changed their password before)
-	u.IsNonDefaultPassword = true
-	u.RecoverySentAt = &time.Time{}
-	require.NoError(ts.T(), ts.API.db.Update(u))
-
-	// Request password recovery
-	var buffer bytes.Buffer
-	require.NoError(ts.T(), json.NewEncoder(&buffer).Encode(map[string]interface{}{
-		"email": "test@example.com",
-	}))
-
-	req := httptest.NewRequest(http.MethodPost, "http://localhost/recover", &buffer)
-	req.Header.Set("Content-Type", "application/json")
-
-	w := httptest.NewRecorder()
-	ts.API.handler.ServeHTTP(w, req)
-	require.Equal(ts.T(), http.StatusOK, w.Code)
-
-	// Get recovery token
-	u, err = models.FindUserByEmailAndAudience(ts.API.db, "test@example.com", ts.Config.JWT.Aud)
-	require.NoError(ts.T(), err)
-	recoveryToken := u.RecoveryToken
-
-	// Verify recovery token
-	reqURL := fmt.Sprintf("http://localhost/verify?type=%s&token=%s", mail.RecoveryVerification, recoveryToken)
-	req = httptest.NewRequest(http.MethodGet, reqURL, nil)
-
-	w = httptest.NewRecorder()
-	ts.API.handler.ServeHTTP(w, req)
-	require.Equal(ts.T(), http.StatusSeeOther, w.Code)
-
-	// Reload user and verify IsNonDefaultPassword is reset to false
-	u, err = models.FindUserByEmailAndAudience(ts.API.db, "test@example.com", ts.Config.JWT.Aud)
-	require.NoError(ts.T(), err)
-
-	require.False(ts.T(), u.IsNonDefaultPassword, "IsNonDefaultPassword should be reset to false during password recovery")
-	require.Equal(ts.T(), "", *u.EncryptedPassword, "Password should be cleared during recovery")
+	return u
 }
 
-func (ts *VerifyTestSuite) TestEmailChangeResetsIsNonDefaultPassword() {
+// keepsItsPassword fails the test unless the suite's password still signs the user in.
+func (ts *VerifyTestSuite) keepsItsPassword(u *models.User, why string) {
+	isValid, _, err := u.Authenticate(context.Background(), ts.API.db, "password",
+		ts.Config.Security.DBEncryption.DecryptionKeys, false, "")
+	require.NoError(ts.T(), err)
+	require.True(ts.T(), isValid, why)
+}
+
+// A verified recovery means the user no longer knows their password, so the next
+// POST /user/change-password must not ask for it. Asking for a recovery proves nothing: anyone
+// can ask for any address. A magic-link sign-in is verified by the same code and proves the same
+// mailbox, but says nothing about the password.
+func (ts *VerifyTestSuite) TestPasswordRecoveryResetsIsNonDefaultPassword() {
+	email := "test@example.com"
+	// Request a link at path, then follow it as a verification of the given type.
+	requestAndVerify := func(path, verificationType string, afterRequest func()) {
+		u := ts.passwordUser(email)
+		// Long ago, so the request is not refused as too frequent.
+		u.RecoverySentAt = &time.Time{}
+		require.NoError(ts.T(), ts.API.db.Update(u))
+
+		var buffer bytes.Buffer
+		require.NoError(ts.T(), json.NewEncoder(&buffer).Encode(map[string]interface{}{"email": email}))
+		req := httptest.NewRequest(http.MethodPost, "http://localhost"+path, &buffer)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		ts.API.handler.ServeHTTP(w, req)
+		require.Equal(ts.T(), http.StatusOK, w.Code, w.Body.String())
+		afterRequest()
+
+		token := ts.passwordUser(email).RecoveryToken
+		require.NotEmpty(ts.T(), token)
+		reqURL := fmt.Sprintf("http://localhost/verify?type=%s&token=%s", verificationType, token)
+		w = httptest.NewRecorder()
+		ts.API.handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, reqURL, nil))
+		require.Equal(ts.T(), http.StatusSeeOther, w.Code)
+	}
+
+	// A confirmed user who has chosen their own password. For an address that is not
+	// confirmed yet, a magic link is a sign-up confirmation and never reaches this code.
+	u := ts.passwordUser(email)
+	now := time.Now()
+	u.EmailConfirmedAt = &now
+	u.IsNonDefaultPassword = true
+	require.NoError(ts.T(), ts.API.db.Update(u))
+
+	requestAndVerify("/magiclink", mail.MagicLinkVerification, func() {})
+	require.True(ts.T(), ts.passwordUser(email).IsNonDefaultPassword,
+		"a magic-link sign-in says nothing about the password")
+
+	requestAndVerify("/recover", mail.RecoveryVerification, func() {
+		require.True(ts.T(), ts.passwordUser(email).IsNonDefaultPassword,
+			"a recovery that was only requested must not change the account")
+	})
+	u = ts.passwordUser(email)
+	require.False(ts.T(), u.IsNonDefaultPassword, "a verified recovery resets IsNonDefaultPassword")
+	ts.keepsItsPassword(u, "a recovery does not remove the password; the user may remember it after all")
+}
+
+// A new address says nothing about the password: the user still knows it, it still signs them
+// in, and changing it still requires it.
+func (ts *VerifyTestSuite) TestEmailChangeKeepsThePasswordAndIsNonDefaultPassword() {
+	secure := ts.Config.Mailer.SecureEmailChangeEnabled
+	ts.Config.Mailer.SecureEmailChangeEnabled = true
+	defer func() { ts.Config.Mailer.SecureEmailChangeEnabled = secure }()
+
 	currentEmail := "test@example.com"
 	newEmail := "new@example.com"
 
-	u, err := models.FindUserByEmailAndAudience(ts.API.db, currentEmail, ts.Config.JWT.Aud)
-	require.NoError(ts.T(), err)
-
-	// Set IsNonDefaultPassword to true
+	u := ts.passwordUser(currentEmail)
 	u.IsNonDefaultPassword = true
 	u.EmailChangeSentAt = &time.Time{}
 	require.NoError(ts.T(), ts.API.db.Update(u))
 
-	// Create session and token
 	session, err := models.NewSession(u.ID, nil)
 	require.NoError(ts.T(), err)
 	require.NoError(ts.T(), ts.API.db.Create(session))
-
 	reqToken := httptest.NewRequest(http.MethodPost, "/token?grant_type=password", nil)
 	token, _, err := ts.API.generateAccessToken(reqToken, ts.API.db, u, &session.ID, models.PasswordGrant)
 	require.NoError(ts.T(), err)
 
-	// Request email change
 	var buffer bytes.Buffer
-	require.NoError(ts.T(), json.NewEncoder(&buffer).Encode(map[string]interface{}{
-		"email": newEmail,
-	}))
-
+	require.NoError(ts.T(), json.NewEncoder(&buffer).Encode(map[string]interface{}{"email": newEmail}))
 	req := httptest.NewRequest(http.MethodPut, "http://localhost/user", &buffer)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-
 	w := httptest.NewRecorder()
 	ts.API.handler.ServeHTTP(w, req)
-	require.Equal(ts.T(), http.StatusOK, w.Code)
+	require.Equal(ts.T(), http.StatusOK, w.Code, w.Body.String())
 
-	// Get email change token
-	u, err = models.FindUserByEmailAndAudience(ts.API.db, currentEmail, ts.Config.JWT.Aud)
-	require.NoError(ts.T(), err)
-	emailChangeToken := u.EmailChangeTokenCurrent
+	// A secure change is confirmed from both addresses.
+	u = ts.passwordUser(currentEmail)
+	for _, tokenHash := range []string{u.EmailChangeTokenNew, u.EmailChangeTokenCurrent} {
+		require.NotEmpty(ts.T(), tokenHash)
+		reqURL := fmt.Sprintf("http://localhost/verify?type=%s&token=%s", mail.EmailChangeVerification, tokenHash)
+		w = httptest.NewRecorder()
+		ts.API.handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, reqURL, nil))
+		require.Equal(ts.T(), http.StatusSeeOther, w.Code)
+	}
 
-	// Verify email change
-	reqURL := fmt.Sprintf("http://localhost/verify?type=%s&token=%s", mail.EmailChangeVerification, emailChangeToken)
-	req = httptest.NewRequest(http.MethodGet, reqURL, nil)
-
-	w = httptest.NewRecorder()
-	ts.API.handler.ServeHTTP(w, req)
-	require.Equal(ts.T(), http.StatusSeeOther, w.Code)
-
-	// Reload user and verify IsNonDefaultPassword is reset to false
-	u, err = models.FindUserByEmailAndAudience(ts.API.db, newEmail, ts.Config.JWT.Aud)
-	require.NoError(ts.T(), err)
-
-	require.False(ts.T(), u.IsNonDefaultPassword, "IsNonDefaultPassword should be reset to false during email change verification")
-	require.Equal(ts.T(), "", *u.EncryptedPassword, "Password should be cleared during email change")
+	u = ts.passwordUser(newEmail)
+	require.True(ts.T(), u.IsNonDefaultPassword, "the password is still the one the user chose")
+	ts.keepsItsPassword(u, "an email change does not remove the password")
 }

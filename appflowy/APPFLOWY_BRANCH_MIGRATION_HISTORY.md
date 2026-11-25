@@ -263,9 +263,24 @@ type User struct {
     IsNonDefaultPassword bool `json:"-" db:"is_non_default_password"`
 }
 ```
-- Tracks if user changed their own password
-- Reset to false on recovery/email change
+- True once the user has chosen their own password, on `POST /user/change-password` or with
+  `PUT /user`. A password generated for a passwordless sign-up or set by an administrator
+  leaves it false
+- Reset to false when a password recovery is verified. Requesting a recovery does not reset
+  it, and neither does a magic-link sign-in or an email change
+- Stored by `User.SetIsNonDefaultPassword` in the same transaction as the change it belongs to;
+  `UpdatePassword` does not write it
 - Used by change-password endpoint for validation
+
+> **Correction, 2026-11-25.** From this migration until that date the flag was never stored.
+> The `appflowy` branch wrote it in `UpdatePassword`'s column list, and the port to `appflowy2`
+> kept the assignments in memory but not that column, so the change-password endpoint stopped
+> asking for a current password that had been set after the migration. The status table above
+> said these tests passed; the commands that produced it named suite methods without their
+> suite and ran no test (see `TESTING_GUIDE.md`). Two of the tests also asserted that a
+> recovery and an email change delete the password, which no version of the fork did. The
+> `appflowy` branch reset the flag when a recovery was *requested*, which let anyone reset it
+> for any address; it is now reset when the recovery is verified.
 
 **2. Change Password Endpoint**
 ```go
