@@ -13,13 +13,23 @@ import (
 
 func TestTokenExchangeConfiguration(t *testing.T) {
 	const secret = "private-key-material-must-not-be-logged"
-	t.Setenv("GOTRUE_TOKEN_EXCHANGE_ENABLED", "false")
-	t.Setenv("GOTRUE_TOKEN_EXCHANGE_SIGNING_KEYS", secret)
+	clear := func() {
+		for _, name := range exchangeSettings {
+			t.Setenv("GOTRUE_TOKEN_EXCHANGE_"+name, "")
+		}
+	}
+	// A deployment file forwards every setting to every installation: the unset ones as
+	// empty strings and the limits with their defaults. That is exchange turned off.
+	clear()
+	t.Setenv("GOTRUE_TOKEN_EXCHANGE_RATE_LIMIT", "150")
+	t.Setenv("GOTRUE_TOKEN_EXCHANGE_MAX_CONCURRENT", "8")
 	var c TokenExchangeConfiguration
 	require.NoError(t, c.load())
+	require.False(t, c.Enabled)
 	require.NoError(t, c.validate(nil))
 
-	t.Setenv("GOTRUE_TOKEN_EXCHANGE_ENABLED", "true")
+	// Any exchange setting turns it on. An unusable key fails without being echoed.
+	t.Setenv("GOTRUE_TOKEN_EXCHANGE_SIGNING_KEYS", secret)
 	err := c.load()
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), secret)
@@ -34,8 +44,20 @@ func TestTokenExchangeConfiguration(t *testing.T) {
 	keys, err := json.Marshal([]jwk.Key{key})
 	require.NoError(t, err)
 	t.Setenv("GOTRUE_TOKEN_EXCHANGE_SIGNING_KEYS", string(keys))
+	// There is no switch to forget. A partly configured exchange stops startup and names
+	// the setting that is missing, whichever part was configured first.
+	require.NoError(t, c.load())
+	require.True(t, c.Enabled)
+	require.ErrorContains(t, c.validate(nil), "GOTRUE_TOKEN_EXCHANGE_TENANT_ID")
 	t.Setenv("GOTRUE_TOKEN_EXCHANGE_TENANT_ID", "11111111-1111-4111-8111-111111111111")
+	require.NoError(t, c.load())
+	require.ErrorContains(t, c.validate(nil), "GOTRUE_TOKEN_EXCHANGE_PROVIDER")
 	t.Setenv("GOTRUE_TOKEN_EXCHANGE_PROVIDER", "custom:tenant")
+	t.Setenv("GOTRUE_TOKEN_EXCHANGE_SIGNING_KEYS", "")
+	require.NoError(t, c.load())
+	require.True(t, c.Enabled)
+	require.ErrorContains(t, c.validate(nil), "GOTRUE_TOKEN_EXCHANGE_SIGNING_KEYS")
+	t.Setenv("GOTRUE_TOKEN_EXCHANGE_SIGNING_KEYS", string(keys))
 	const client = "22222222-2222-4222-8222-222222222222"
 	t.Setenv("GOTRUE_TOKEN_EXCHANGE_CLIENTS", `{"`+client+`":{"entra_client_id":"33333333-3333-4333-8333-333333333333","audience":"44444444-4444-4444-8444-444444444444","scopes":["data.read"]}}`)
 	require.NoError(t, c.load())
@@ -63,7 +85,8 @@ func TestTokenExchangeConfiguration(t *testing.T) {
 	policy.Audience = policy.EntraClientID
 	c.Clients[client] = policy
 	require.Error(t, c.validate(nil), "dashboard is a different audience from the resource")
-	t.Setenv("GOTRUE_TOKEN_EXCHANGE_ENABLED", "false")
+	// Removing the settings turns exchange off again and leaves nothing behind.
+	clear()
 	require.NoError(t, c.load())
-	require.False(t, c.Enabled)
+	require.Equal(t, TokenExchangeConfiguration{}, c)
 }

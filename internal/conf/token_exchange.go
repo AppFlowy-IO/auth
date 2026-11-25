@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
@@ -17,11 +18,13 @@ import (
 
 // TokenExchangeConfiguration contains the installation's explicit delegation policy.
 // The resource and client IDs are Entra application IDs. Only existing GoTrue
-// confidential clients listed here can act on behalf of a user. An enabled policy
-// with no clients refuses every exchange and opens the admin client registry, which
-// is how the first backend gets the client ID that this policy then names.
+// confidential clients listed here can act on behalf of a user. A policy with no
+// clients refuses every exchange and opens the admin client registry, which is how
+// the first backend gets the client ID that this policy then names.
 type TokenExchangeConfiguration struct {
-	Enabled       bool
+	// Enabled is derived, never read from the environment: exchange is on exactly
+	// when the installation configures it. See load.
+	Enabled       bool   `ignored:"true"`
 	TenantID      string `split_words:"true"`
 	Provider      string
 	Clients       ExchangeClients
@@ -54,6 +57,12 @@ func (c *ExchangeClients) Decode(value string) error {
 type ExchangeSigningKeys struct{ JwtKeysDecoder }
 
 func (k *ExchangeSigningKeys) Decode(value string) error {
+	// A deployment file forwards an unset value as an empty string. validate names
+	// the missing setting when the rest of the exchange is configured.
+	if strings.TrimSpace(value) == "" {
+		k.JwtKeysDecoder = JwtKeysDecoder{}
+		return nil
+	}
 	var entries []json.RawMessage
 	if err := json.Unmarshal([]byte(value), &entries); err != nil {
 		return err
@@ -71,14 +80,20 @@ func (k *ExchangeSigningKeys) Decode(value string) error {
 	return nil
 }
 
+// exchangeSettings turn exchange on when any of them has a value. There is no separate
+// switch: an installation that configures none of them never parses or serves anything,
+// and one that configures only some of them fails validation at startup instead of
+// running with exchange silently off. The two limits are not listed, because deployment
+// files forward their defaults to every installation.
+var exchangeSettings = []string{"TENANT_ID", "PROVIDER", "CLIENTS", "SIGNING_KEYS"}
+
 func (c *TokenExchangeConfiguration) load() error {
 	const prefix = "GOTRUE_TOKEN_EXCHANGE"
-	var gate struct{ Enabled bool }
-	if err := envconfig.Process(prefix, &gate); err != nil {
-		return err
-	}
-	if !gate.Enabled {
-		*c = TokenExchangeConfiguration{}
+	configured := slices.ContainsFunc(exchangeSettings, func(name string) bool {
+		return strings.TrimSpace(os.Getenv(prefix+"_"+name)) != ""
+	})
+	*c = TokenExchangeConfiguration{}
+	if !configured {
 		return nil
 	}
 	if err := envconfig.Process(prefix, c); err != nil {
@@ -88,6 +103,7 @@ func (c *TokenExchangeConfiguration) load() error {
 		}
 		return err
 	}
+	c.Enabled = true
 	return nil
 }
 
@@ -100,7 +116,10 @@ func (c *TokenExchangeConfiguration) validate(loginKeys JwtKeysDecoder) error {
 		return err == nil && id != uuid.Nil && id.String() == s
 	}
 	if !validID(c.TenantID) || !strings.HasPrefix(c.Provider, "custom:") || len(c.Provider) <= len("custom:") {
-		return fmt.Errorf("token exchange requires a tenant UUID and a custom OIDC provider")
+		return fmt.Errorf("token exchange requires GOTRUE_TOKEN_EXCHANGE_TENANT_ID as a lowercase tenant UUID and GOTRUE_TOKEN_EXCHANGE_PROVIDER as a custom OIDC provider identifier")
+	}
+	if len(c.SigningKeys.JwtKeysDecoder) == 0 {
+		return fmt.Errorf("token exchange requires GOTRUE_TOKEN_EXCHANGE_SIGNING_KEYS")
 	}
 	if c.RateLimit <= 0 || c.MaxConcurrent <= 0 {
 		return fmt.Errorf("token exchange rate and concurrency limits must be positive")

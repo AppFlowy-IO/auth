@@ -3,8 +3,9 @@
 A dashboard can exchange a signed-in user's delegated Entra access token at GoTrue's
 `POST /token` (public AppFlowy path `/gotrue/token`). Each response authorizes one
 resource API and identifies both the GoTrue user and the dashboard client. The grant is
-disabled by default. A resource API must implement the validation described below before
-its operator enables exchange. Existing AppFlowy workspace APIs need that consumer change.
+off until an installation configures it. A resource API must implement the validation
+described below before its operator configures exchange. Existing AppFlowy workspace APIs
+need that consumer change.
 
 ## Configure the installation
 
@@ -19,13 +20,14 @@ its operator enables exchange. Existing AppFlowy workspace APIs need that consum
    Exchange resolves the signed tenant and object IDs against the verified data on that
    provider identity. It rejects absent or ambiguous links, including email-only and
    SCIM-only accounts. An existing user can establish the link through normal OIDC sign-in.
-3. Set the following on GoTrue and restart it. Leave `GOTRUE_TOKEN_EXCHANGE_CLIENTS`
-   empty the first time: an enabled installation with no clients refuses every exchange
-   and opens the admin client registry used in the next step.
+3. Set the following on GoTrue and restart it. There is no separate switch: the
+   tenant, provider, client and signing-key settings turn exchange on, and GoTrue
+   refuses to start when only some of them are set. Leave
+   `GOTRUE_TOKEN_EXCHANGE_CLIENTS` empty the first time: an installation with no clients
+   refuses every exchange and opens the admin client registry used in the next step.
 
    | Setting | Value |
    | --- | --- |
-   | `GOTRUE_TOKEN_EXCHANGE_ENABLED` | `true` |
    | `GOTRUE_TOKEN_EXCHANGE_TENANT_ID` | Customer's lowercase Entra tenant UUID |
    | `GOTRUE_TOKEN_EXCHANGE_PROVIDER` | Enabled OIDC provider identifier, e.g. `custom:entra` |
    | `GOTRUE_TOKEN_EXCHANGE_CLIENTS` | JSON keyed by the GoTrue client UUID, as shown in step 4. Empty until the first backend is registered. |
@@ -55,6 +57,10 @@ its operator enables exchange. Existing AppFlowy workspace APIs need that consum
    `audience` is the Entra application ID of the downstream API (`aud`). The verifier
    uses the public Microsoft cloud's tenant-specific signing keys. Tenant-independent,
    sovereign-cloud, v1 and app-only tokens are outside this profile.
+
+To stop issuing tokens while keeping the configuration, empty
+`GOTRUE_TOKEN_EXCHANGE_CLIENTS` and restart. Removing every setting in the table turns
+exchange off entirely.
 
 Token exchange needs the client registry and none of the OAuth server's authorization
 endpoints. Leave `GOTRUE_OAUTH_SERVER_ENABLED` unset unless the installation uses that
