@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -808,7 +807,9 @@ func isOtpValid(actual, expected string, sentAt *time.Time, otpExp uint) (bool, 
 		return false, errors.New("expected token is empty")
 	}
 	if (actual != expected) && ("pkce_"+actual != expected) {
-		return false, errors.New(fmt.Sprintf("mismatched token (%s, %s)", actual, expected))
+		// Name neither token. The caller logs this error, and the stored token is the
+		// secret that an emailed link carries.
+		return false, errors.New("mismatched token")
 	}
 	return true, nil
 }
