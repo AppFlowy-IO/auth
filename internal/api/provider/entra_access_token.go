@@ -27,7 +27,7 @@ type EntraAccessTokens struct {
 }
 
 // ErrEntraKeysUnavailable indicates that a verifier could not retrieve signing keys.
-var ErrEntraKeysUnavailable = errors.New("Entra signing keys unavailable")
+var ErrEntraKeysUnavailable = errors.New("signing keys for Entra are unavailable")
 
 func NewEntraAccessTokens(tenant string, client *http.Client) *EntraAccessTokens {
 	ctx := oidc.ClientContext(context.Background(), client)

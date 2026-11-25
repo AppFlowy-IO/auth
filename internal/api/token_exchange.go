@@ -23,9 +23,10 @@ import (
 	"github.com/supabase/auth/internal/storage"
 )
 
+// RFC 8693 identifiers. gosec reads a constant named after a token as a credential.
 const (
-	tokenExchangeGrant = "urn:ietf:params:oauth:grant-type:token-exchange"
-	accessTokenType    = "urn:ietf:params:oauth:token-type:access_token"
+	tokenExchangeGrant = "urn:ietf:params:oauth:grant-type:token-exchange" // #nosec G101
+	accessTokenType    = "urn:ietf:params:oauth:token-type:access_token"   // #nosec G101
 )
 
 type tokenExchange struct {
