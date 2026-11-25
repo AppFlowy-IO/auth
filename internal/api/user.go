@@ -156,7 +156,6 @@ func (a *API) UserChangePassword(w http.ResponseWriter, r *http.Request) error {
 	if err := user.SetPassword(ctx, password, config.Security.DBEncryption.Encrypt, config.Security.DBEncryption.EncryptionKeyID, config.Security.DBEncryption.EncryptionKey); err != nil {
 		return err
 	}
-	user.IsNonDefaultPassword = true
 
 	err := db.Transaction(func(tx *storage.Connection) error {
 		var terr error
@@ -166,6 +165,10 @@ func (a *API) UserChangePassword(w http.ResponseWriter, r *http.Request) error {
 		}
 
 		if terr = user.UpdatePassword(tx, sessionID); terr != nil {
+			return apierrors.NewInternalServerError("Error during password storage").WithInternalError(terr)
+		}
+		// The user chose this password, so the next change has to present it.
+		if terr = user.SetIsNonDefaultPassword(tx, true); terr != nil {
 			return apierrors.NewInternalServerError("Error during password storage").WithInternalError(terr)
 		}
 
@@ -324,6 +327,13 @@ func (a *API) UserUpdate(w http.ResponseWriter, r *http.Request) error {
 
 			if terr = user.UpdatePassword(tx, sessionID); terr != nil {
 				return apierrors.NewInternalServerError("Error during password storage").WithInternalError(terr)
+			}
+			// AppFlowy: a password set here is the user's own choice, exactly as on
+			// POST /user/change-password. This is how Web and Desktop set one after a recovery.
+			if *params.Password != "" {
+				if terr = user.SetIsNonDefaultPassword(tx, true); terr != nil {
+					return apierrors.NewInternalServerError("Error during password storage").WithInternalError(terr)
+				}
 			}
 
 			if terr := models.NewAuditLogEntry(config.AuditLog, r, tx, user, models.UserUpdatePasswordAction, "", nil); terr != nil {

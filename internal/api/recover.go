@@ -62,9 +62,6 @@ func (a *API) Recover(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	// Reset password flags during recovery
-	user.IsNonDefaultPassword = false
-
 	err = db.Transaction(func(tx *storage.Connection) error {
 		if terr := models.NewAuditLogEntry(config.AuditLog, r, tx, user, models.UserRecoveryRequestedAction, "", nil); terr != nil {
 			return terr
