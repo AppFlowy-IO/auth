@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gofrs/uuid"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 	"github.com/supabase/auth/internal/api/apierrors"
@@ -66,6 +67,33 @@ func TestHandleResponseErrorWithHTTPError(t *testing.T) {
 
 		require.Equal(t, example.HTTPError.HTTPStatus, rec.Code)
 		require.Equal(t, example.ExpectedBody, rec.Body.String())
+	}
+}
+
+func TestDirectLegacyInternalErrorGeneratesRequestID(t *testing.T) {
+	config := &conf.GlobalConfiguration{}
+	config.API.RequestIDHeader = observability.RequestIDHeader
+	handler := observability.AddRequestID(config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		HandleResponseError(apierrors.NewInternalServerError("fixture failure"), w, r)
+	}))
+
+	for _, headers := range [][]string{nil, {".."}, {"id-a", "id-b"}} {
+		req := httptest.NewRequest(http.MethodPost, "/token?grant_type=password", nil)
+		for _, h := range headers {
+			req.Header.Add(observability.RequestIDHeader, h)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusInternalServerError, rec.Code)
+		ids := rec.Header().Values(observability.RequestIDHeader)
+		require.Len(t, ids, 1)
+		id, err := uuid.FromString(ids[0])
+		require.NoError(t, err)
+		require.EqualValues(t, 4, id.Version())
+		var body HTTPError
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.Equal(t, id.String(), body.ErrorID)
 	}
 }
 
