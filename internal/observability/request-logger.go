@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
 	"time"
 
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -13,18 +14,28 @@ import (
 	"github.com/supabase/auth/internal/utilities"
 )
 
+// RequestIDHeader is the public correlation header echoed on Auth responses.
+const RequestIDHeader = "X-Request-ID"
+
+var diagnosticRequestID = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+
 func AddRequestID(globalConfig *conf.GlobalConfiguration) func(next http.Handler) http.Handler {
+	header := globalConfig.API.RequestIDHeader
+	if header == "" {
+		header = RequestIDHeader
+	}
 	return func(next http.Handler) http.Handler {
-		fn := func(w http.ResponseWriter, r *http.Request) {
-			id := uuid.Must(uuid.NewV4()).String()
-			if globalConfig.API.RequestIDHeader != "" {
-				id = r.Header.Get(globalConfig.API.RequestIDHeader)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			values := r.Header.Values(header)
+			var id string
+			if len(values) == 1 && values[0] != "." && values[0] != ".." && diagnosticRequestID.MatchString(values[0]) {
+				id = values[0]
+			} else {
+				id = uuid.Must(uuid.NewV4()).String()
 			}
-			ctx := r.Context()
-			ctx = utilities.WithRequestID(ctx, id)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		}
-		return http.HandlerFunc(fn)
+			w.Header().Set(RequestIDHeader, id)
+			next.ServeHTTP(w, r.WithContext(utilities.WithRequestID(r.Context(), id)))
+		})
 	}
 }
 

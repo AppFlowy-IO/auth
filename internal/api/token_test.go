@@ -326,10 +326,22 @@ func (ts *TokenTestSuite) TestTokenPasswordGrantFailure() {
 
 	req := httptest.NewRequest(http.MethodPost, "http://localhost/token?grant_type=password", &buffer)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://example.com")
+	req.Header.Set("X-Request-ID", "Login.Case-42")
 
 	w := httptest.NewRecorder()
 	ts.API.handler.ServeHTTP(w, req)
 	assert.Equal(ts.T(), http.StatusBadRequest, w.Code)
+	assert.Equal(ts.T(), "Login.Case-42", w.Header().Get("X-Request-ID"))
+	assert.Contains(ts.T(), strings.ToLower(w.Header().Get("Access-Control-Expose-Headers")), "x-request-id")
+
+	preflight := httptest.NewRequest(http.MethodOptions, "/token?grant_type=password", nil)
+	preflight.Header.Set("Origin", "https://example.com")
+	preflight.Header.Set("Access-Control-Request-Method", "POST")
+	preflight.Header.Set("Access-Control-Request-Headers", "x-request-id")
+	preflightResponse := httptest.NewRecorder()
+	ts.API.handler.ServeHTTP(preflightResponse, preflight)
+	assert.Contains(ts.T(), strings.ToLower(preflightResponse.Header().Get("Access-Control-Allow-Headers")), "x-request-id")
 }
 
 func (ts *TokenTestSuite) TestTokenPKCEGrantFailure() {

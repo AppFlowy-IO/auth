@@ -254,7 +254,9 @@ The URL on which GoTrue might be accessed at.
 
 `REQUEST_ID_HEADER` - `string`
 
-If you wish to inherit a request ID from the incoming request, specify the name in this value.
+Auth reads `X-Request-ID` by default. Set `GOTRUE_API_REQUEST_ID_HEADER` to read an ID from a different incoming header supplied by your proxy. Auth accepts a single value of 1–128 ASCII letters, digits, hyphens, underscores, or dots, excluding `.` and `..`. It generates a UUID if the incoming ID is missing or invalid.
+
+Clients can read the effective ID from the `X-Request-ID` response header, including on failed password grants. Operators can look up this exact value in the structured `request_id` log field.
 
 ### Database
 
